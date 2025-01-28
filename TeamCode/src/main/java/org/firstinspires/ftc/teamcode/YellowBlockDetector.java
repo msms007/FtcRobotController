@@ -10,6 +10,9 @@ import java.util.List;
 
 public class YellowBlockDetector extends OpenCvPipeline {
     private Telemetry telemetry;
+    // Known parameters (calibrate these for your setup)
+    final double KNOWN_WIDTH = 8.0; // Real-world width of the block in centimeters
+    final double FOCAL_LENGTH = 940; //554; //1430.0; // Focal length in pixels (calibrate this value)
 
     public YellowBlockDetector(Telemetry telemetry) {
         this.telemetry = telemetry;
@@ -52,6 +55,9 @@ public class YellowBlockDetector extends OpenCvPipeline {
 
                 // Calculate the bounding rectangle
                 Rect boundingRect = Imgproc.boundingRect(new MatOfPoint(approxCurve.toArray()));
+                double pixelWidth = boundingRect.width;
+                // Calculate distance
+                double distance = (KNOWN_WIDTH * FOCAL_LENGTH) / pixelWidth;
                 Moments moments = Imgproc.moments(contour);
                 double cx = moments.get_m10() / moments.get_m00(); // X center
                 double cy = moments.get_m01() / moments.get_m00(); // Y center
@@ -60,9 +66,11 @@ public class YellowBlockDetector extends OpenCvPipeline {
                 double angle = Imgproc.fitEllipse(contour2f).angle;
                 // Draw the rectangle
                 Imgproc.rectangle(input, boundingRect, new Scalar(255, 0, 0), 2);
+                //Imgproc.circle(input, new Point(cx, cy), 5, new Scalar(0, 0, 255), -1);
+
                 // Display telemetry data
                 telemetry.addData("Block Center", "X: %.2f, Y: %.2f", cx, cy);
-                telemetry.addData("Orientation Angle", "%.2f", angle);
+                telemetry.addData("Orientation Angle, DIST(IN)", "%.2f, %.2f", angle, distance / 2.54);
             }
         }
 
