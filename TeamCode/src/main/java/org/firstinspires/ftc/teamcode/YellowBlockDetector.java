@@ -1,4 +1,5 @@
 package org.firstinspires.ftc.teamcode;
+
 import org.firstinspires.ftc.robotcore.external.Telemetry;
 import org.opencv.core.*;
 import org.opencv.imgproc.Imgproc;
@@ -10,75 +11,124 @@ import java.util.List;
 
 public class YellowBlockDetector extends OpenCvPipeline {
     private Telemetry telemetry;
+
     // Known parameters (calibrate these for your setup)
-    final double KNOWN_WIDTH = 8.0; // Real-world width of the block in centimeters
-    final double FOCAL_LENGTH = 940; //554; //1430.0; // Focal length in pixels (calibrate this value)
+    final double FOCAL_LENGTH = 920; // Focal length in pixels (calibrate this value)
 
     public YellowBlockDetector(Telemetry telemetry) {
         this.telemetry = telemetry;
     }
+
     @Override
     public Mat processFrame(Mat input) {
         Mat hsvMat = new Mat();
         Mat yellowMask = new Mat();
+        Mat morphedMask = new Mat();
         Mat hierarchy = new Mat();
+        Rect bestBlock = null;
+        double maxY = 0;
+        double bestOrientationAngle = 0.0;
+        double distanceToTarget = 0.0; // Distance to the selected block
 
-        // Convert the image to HSV
-        Imgproc.cvtColor(input, hsvMat, Imgproc.COLOR_RGB2HSV);
+        // Known parameters
+        final double KNOWN_WIDTH = 3.0; // Real-world width of the block in cm
+        final double FOCAL_LENGTH = 940.0; // Calibrated focal length in pixels
 
-        // Define the yellow color range in HSV
-        Scalar lowerYellow = new Scalar(20, 100, 100); // Adjust based on lighting
-        Scalar upperYellow = new Scalar(30, 255, 255);
+        try {
+            // Convert the image to HSV
+            Imgproc.cvtColor(input, hsvMat, Imgproc.COLOR_RGB2HSV);
 
-        // Create a mask for yellow color
-        Core.inRange(hsvMat, lowerYellow, upperYellow, yellowMask);
+            // Define yellow range in HSV
+            Scalar lowerYellow = new Scalar(20, 100, 100); // Adjust for lighting
+            Scalar upperYellow = new Scalar(30, 255, 255);
+            Core.inRange(hsvMat, lowerYellow, upperYellow, yellowMask);
 
-        // Morphological operations to clean up the mask
-        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(5, 5));
-        Imgproc.morphologyEx(yellowMask, yellowMask, Imgproc.MORPH_CLOSE, kernel);
+            // Apply morphological operations
+            Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(5, 5));
+            Imgproc.erode(yellowMask, yellowMask, kernel);
+            Imgproc.dilate(yellowMask, yellowMask, kernel);
 
-        // Find contours of the yellow objects
-        List<MatOfPoint> contours = new ArrayList<>();
-        Imgproc.findContours(yellowMask, contours, hierarchy, Imgproc.RETR_TREE, Imgproc.CHAIN_APPROX_SIMPLE);
+            // Find contours
+            List<MatOfPoint> contours = new ArrayList<>();
+            Imgproc.findContours(yellowMask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
 
-        // Iterate through contours to detect blocks and their orientation
-        for (MatOfPoint contour : contours) {
-            double area = Imgproc.contourArea(contour);
-            if (area > 1000) { // Filter small noise
-                // Approximate the contour to a polygon
-                MatOfPoint2f contour2f = new MatOfPoint2f(contour.toArray());
-                MatOfPoint2f approxCurve = new MatOfPoint2f();
-                Imgproc.approxPolyDP(contour2f, approxCurve, 0.02 * Imgproc.arcLength(contour2f, true), true);
+            // Define the no-pick zone threshold (e.g., bottom 50 pixels)
+            int frameHeight = input.height();
+            int noPickZoneThreshold = frameHeight - 80;
 
-                // Draw the contour
-                Imgproc.drawContours(input, contours, -1, new Scalar(0, 255, 0), 2);
+            // Process each contour
+            for (MatOfPoint contour : contours) {
+                Rect boundingRect = Imgproc.boundingRect(contour);
+                double area = Imgproc.contourArea(contour);
 
-                // Calculate the bounding rectangle
-                Rect boundingRect = Imgproc.boundingRect(new MatOfPoint(approxCurve.toArray()));
-                double pixelWidth = boundingRect.width;
-                // Calculate distance
-                double distance = (KNOWN_WIDTH * FOCAL_LENGTH) / pixelWidth;
-                Moments moments = Imgproc.moments(contour);
-                double cx = moments.get_m10() / moments.get_m00(); // X center
-                double cy = moments.get_m01() / moments.get_m00(); // Y center
+                // Skip blocks that are in the no-pick zone
+                if (boundingRect.y + boundingRect.height > noPickZoneThreshold) {
+                    Imgproc.rectangle(input, boundingRect, new Scalar(0, 255, 255), 2); // Yellow for ignored blocks
+                    continue;
+                }
 
-                // Orientation
-                double angle = Imgproc.fitEllipse(contour2f).angle;
-                // Draw the rectangle
-                Imgproc.rectangle(input, boundingRect, new Scalar(255, 0, 0), 2);
-                //Imgproc.circle(input, new Point(cx, cy), 5, new Scalar(0, 0, 255), -1);
+                // Select the closest block above the no-pick zone
+                if (area > 1000 && boundingRect.y + boundingRect.height > maxY) {
+                    maxY = boundingRect.y + boundingRect.height;
+                    bestBlock = boundingRect;
 
-                // Display telemetry data
-                telemetry.addData("Block Center", "X: %.2f, Y: %.2f", cx, cy);
-                telemetry.addData("Orientation Angle, DIST(IN)", "%.2f, %.2f", angle, distance / 2.54);
+                    // Calculate orientation angle using minAreaRect
+                    MatOfPoint2f contour2f = new MatOfPoint2f(contour.toArray());
+                    RotatedRect rotatedRect = Imgproc.minAreaRect(contour2f);
+
+                    if (rotatedRect.size.width > rotatedRect.size.height) {
+                        bestOrientationAngle = rotatedRect.angle;
+                    } else {
+                        bestOrientationAngle = rotatedRect.angle + 90;
+                    }
+
+                    if (bestOrientationAngle < 0) {
+                        bestOrientationAngle += 180;
+                    }
+
+                    // Calculate the distance to the block
+                    double pixelWidth = boundingRect.width;
+                    double pixelHeight = boundingRect.height;
+
+                    // Determine block orientation
+                    double aspectRatio = (double) pixelWidth / pixelHeight;
+                    double knownSize; // Known dimension based on orientation
+                    if (aspectRatio > 1.0) {
+                        // Block is horizontal
+                        knownSize = 8.0; // Length of the block (in cm)
+                        telemetry.addData("Orientation", "Horizontal");
+                    } else {
+                        // Block is vertical
+                        knownSize = 3.0; // Width of the block (in cm)
+                        telemetry.addData("Orientation", "Vertical");
+                    }
+
+                    // Calculate distance
+                    distanceToTarget = (knownSize * FOCAL_LENGTH) / pixelWidth;
+                }
+
+                // Draw valid block contours
+                Imgproc.rectangle(input, boundingRect, new Scalar(0, 255, 0), 2); // Green for valid blocks
             }
-        }
 
-        // Release resources
-        hsvMat.release();
-        yellowMask.release();
-        hierarchy.release();
+            // Highlight the selected target block
+            if (bestBlock != null) {
+                Imgproc.rectangle(input, bestBlock, new Scalar(255, 0, 0), 4); // Blue for target block
+                telemetry.addData("Target Block", "X: %d, Y: %d", bestBlock.x, bestBlock.y);
+                telemetry.addData("Orientation Angle", "%.2f°", bestOrientationAngle);
+                telemetry.addData("Distance to Target", "%.2f INCH", (distanceToTarget / 2.54));
+            }
+        } catch (Exception e) {
+            telemetry.addData("Error", e.getMessage());
+        } finally {
+            // Release resources
+            hsvMat.release();
+            yellowMask.release();
+            morphedMask.release();
+            hierarchy.release();
+        }
 
         return input;
     }
+
 }
