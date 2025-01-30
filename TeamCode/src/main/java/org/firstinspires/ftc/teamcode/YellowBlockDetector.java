@@ -33,6 +33,7 @@ public class YellowBlockDetector extends OpenCvPipeline {
         final double FOCAL_LENGTH = 960; // Calibrated focal length in pixels
         final int noPickZoneLeftThreshold = 300; // Pixels from the left edge to ignore
         final int noPickZoneBottomThreshold = 50; // Pixels from the bottom edge to ignore
+        final int noPickZoneTopThreshold = 50; // Pixels from the top edge to ignore
 
         try {
             // Convert the image to HSV
@@ -62,9 +63,10 @@ public class YellowBlockDetector extends OpenCvPipeline {
                 Rect boundingRect = Imgproc.boundingRect(contour);
                 double area = Imgproc.contourArea(contour);
 
-                // Skip blocks in the no-pick zone on the left or bottom
+                // Skip blocks in the no-pick zones
                 if (boundingRect.x < noPickZoneLeftThreshold ||
-                        boundingRect.y + boundingRect.height > input.height() - noPickZoneBottomThreshold) {
+                        boundingRect.y + boundingRect.height > input.height() - noPickZoneBottomThreshold ||
+                        boundingRect.y < noPickZoneTopThreshold) {
                     Imgproc.rectangle(input, boundingRect, new Scalar(0, 255, 255), 2); // Yellow for ignored blocks
                     continue;
                 }
@@ -112,18 +114,15 @@ public class YellowBlockDetector extends OpenCvPipeline {
                 double pixelWidth = targetBlock.width;
                 double pixelHeight = targetBlock.height;
                 double aspectRatio = (double) pixelWidth / pixelHeight;
-                // double knownSize;
+
                 if (aspectRatio > 1.0) {
-                    // Block is horizontal
-                    // knownSize = 8.0; // Length of the block (in cm)
                     telemetry.addData("Horizontal", "PW %.2f", pixelWidth);
                 } else {
-                    // Block is vertical
-                    // knownSize = 3.0; // Width of the block (in cm)
                     telemetry.addData("Vertical", "PW %.2f", pixelWidth);
-                    pixelWidth = pixelWidth*2;
+                    pixelWidth = pixelWidth * 2;
                 }
-                double distanceToTarget = ((KNOWN_WIDTH * FOCAL_LENGTH) / pixelWidth ) / 2.54; //Covert to INch
+
+                double distanceToTarget = ((KNOWN_WIDTH * FOCAL_LENGTH) / pixelWidth) / 2.54; // Convert to inches
                 // Telemetry for the target block
                 telemetry.addData("Target Block", "X: %d, Y: %d", targetBlock.x, targetBlock.y);
                 telemetry.addData("Orientation Angle", "%.2f°", bestOrientationAngle);
@@ -141,115 +140,6 @@ public class YellowBlockDetector extends OpenCvPipeline {
 
         return input;
     }
-    public Mat processFrameOLD(Mat input) {
-        Mat hsvMat = new Mat();
-        Mat yellowMask = new Mat();
-        Mat morphedMask = new Mat();
-        Mat hierarchy = new Mat();
-        Rect bestBlock = null;
-        double maxY = 0;
-        double bestOrientationAngle = 0.0;
-        double distanceToTarget = 0.0; // Distance to the selected block
 
-        // Known parameters
-        final double KNOWN_WIDTH = 3.0; // Real-world width of the block in cm
-        final double FOCAL_LENGTH = 940.0; // Calibrated focal length in pixels
-
-        try {
-            // Convert the image to HSV
-            Imgproc.cvtColor(input, hsvMat, Imgproc.COLOR_RGB2HSV);
-
-            // Define yellow range in HSV
-            Scalar lowerYellow = new Scalar(20, 100, 100); // Adjust for lighting
-            Scalar upperYellow = new Scalar(30, 255, 255);
-            Core.inRange(hsvMat, lowerYellow, upperYellow, yellowMask);
-
-            // Apply morphological operations
-            Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(5, 5));
-            Imgproc.erode(yellowMask, yellowMask, kernel);
-            Imgproc.dilate(yellowMask, yellowMask, kernel);
-
-            // Find contours
-            List<MatOfPoint> contours = new ArrayList<>();
-            Imgproc.findContours(yellowMask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
-
-            // Define the no-pick zone threshold (e.g., bottom 50 pixels)
-            int frameHeight = input.height();
-            int noPickZoneThreshold = frameHeight - 50;
-
-            // Process each contour
-            for (MatOfPoint contour : contours) {
-                Rect boundingRect = Imgproc.boundingRect(contour);
-                double area = Imgproc.contourArea(contour);
-
-                // Skip blocks that are in the no-pick zone
-                if (boundingRect.y + boundingRect.height > noPickZoneThreshold) {
-                    Imgproc.rectangle(input, boundingRect, new Scalar(0, 255, 255), 2); // Yellow for ignored blocks
-                    continue;
-                }
-
-                // Select the closest block above the no-pick zone
-                if (area > 1000 && boundingRect.y + boundingRect.height > maxY) {
-                    maxY = boundingRect.y + boundingRect.height;
-                    bestBlock = boundingRect;
-
-                    // Calculate orientation angle using minAreaRect
-                    MatOfPoint2f contour2f = new MatOfPoint2f(contour.toArray());
-                    RotatedRect rotatedRect = Imgproc.minAreaRect(contour2f);
-
-                    if (rotatedRect.size.width > rotatedRect.size.height) {
-                        bestOrientationAngle = rotatedRect.angle;
-                    } else {
-                        bestOrientationAngle = rotatedRect.angle + 90;
-                    }
-
-                    if (bestOrientationAngle < 0) {
-                        bestOrientationAngle += 180;
-                    }
-
-                    // Calculate the distance to the block
-                    double pixelWidth = boundingRect.width;
-                    double pixelHeight = boundingRect.height;
-
-                    // Determine block orientation
-                    double aspectRatio = (double) pixelWidth / pixelHeight;
-                    double knownSize; // Known dimension based on orientation
-                    if (aspectRatio > 1.0) {
-                        // Block is horizontal
-                        knownSize = 8.0; // Length of the block (in cm)
-                        telemetry.addData("Orientation", "Horizontal");
-                    } else {
-                        // Block is vertical
-                        knownSize = 3.0; // Width of the block (in cm)
-                        telemetry.addData("Orientation", "Vertical");
-                    }
-
-                    // Calculate distance
-                    distanceToTarget = (knownSize * FOCAL_LENGTH) / pixelWidth;
-                }
-
-                // Draw valid block contours
-                Imgproc.rectangle(input, boundingRect, new Scalar(0, 255, 0), 2); // Green for valid blocks
-            }
-
-            // Highlight the selected target block
-            if (bestBlock != null) {
-                Imgproc.rectangle(input, bestBlock, new Scalar(255, 0, 0), 4); // Blue for target block
-                telemetry.addData("Target Block", "X: %d, Y: %d", bestBlock.x, bestBlock.y);
-                telemetry.addData("Orientation Angle", "%.2f°", bestOrientationAngle);
-                telemetry.addData("Distance to Target", "%.2f INCH", (distanceToTarget / 2.54));
-            }
-        } catch (Exception e) {
-            telemetry.addData("Error", e.getMessage());
-        } finally {
-            // Release resources
-            hsvMat.release();
-            yellowMask.release();
-            morphedMask.release();
-            hierarchy.release();
-        }
-
-        return input;
-    }
 
 }
